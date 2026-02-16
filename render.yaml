@@ -1,0 +1,10 @@
+services:
+  - type: web
+    name: shygyn-bot
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: python bot.py
+    plan: free
+    envVars:
+      - key: BOT_TOKEN
+        sync: false
