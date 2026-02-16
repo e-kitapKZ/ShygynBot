@@ -1,3 +1,7 @@
+"""
+Telegram бот для учёта семейных расходов
+Финальная версия со всеми категориями и бюджетами
+"""
 
 import logging
 import sqlite3
@@ -322,10 +326,10 @@ async def check_budgets():
                                 await bot.send_message(
                                     user_id,
                                     f"⚠️ *ПРЕВЫШЕНИЕ БЮДЖЕТА!*\n\n"
-                                    f"{emoji} Категория: *{category}*\n"
-                                    f"💰 Лимит: *{limit:.0f} {CURRENCY}*\n"
-                                    f"💳 Потрачено: *{spent:.0f} {CURRENCY}*\n"
-                                    f"📈 Превышение: *+{over_amount:.0f} {CURRENCY}* ({over_percent:.1f}%)\n\n"
+                                    f"{emoji} Категория: {category}\n"
+                                    f"💰 Лимит: {limit:.0f} {CURRENCY}\n"
+                                    f"💳 Потрачено: {spent:.0f} {CURRENCY}\n"
+                                    f"📈 Превышение: +{over_amount:.0f} {CURRENCY} ({over_percent:.1f}%)\n\n"
                                     f"📅 {now.strftime('%d.%m.%Y')}",
                                     parse_mode=ParseMode.MARKDOWN
                                 )
@@ -388,7 +392,7 @@ async def cmd_start(message: Message):
     text = (
         "👋 *Добро пожаловать в семейный бюджет!*\n\n"
         "📝 *Как записывать расходы:*\n"
-        "• Отправьте сумму (например: *1500*)\n"
+        "• Отправьте сумму (например: 1500)\n"
         "• Выберите категорию из списка\n\n"
         "💰 *Управление бюджетом:*\n"
         "/budget — установить лимиты на категории\n"
@@ -408,7 +412,7 @@ async def cmd_help(message: Message):
     text = (
         "📚 *Подробная инструкция*\n\n"
         "*Как записывать расход:*\n"
-        "1️⃣ Отправьте сумму цифрами (например: *2500*)\n"
+        "1️⃣ Отправьте сумму цифрами (например: 2500)\n"
         "2️⃣ Выберите категорию из списка\n"
         "3️⃣ Подтвердите или измените данные\n\n"
         "*Как установить бюджет:*\n"
@@ -468,7 +472,7 @@ async def cmd_show_budgets(message: Message):
             remaining = limit - spent
             status = f"✅ Осталось: {remaining:.0f} {CURRENCY}"
         
-        response += f"{emoji} *{category}*:\n"
+        response += f"{emoji} {category}:\n"
         response += f"   Лимит: {limit:.0f} {CURRENCY}\n"
         response += f"   Потрачено: {spent:.0f} {CURRENCY}\n"
         response += f"   {status}\n\n"
@@ -496,14 +500,14 @@ async def cmd_today(message: Message):
     
     for cat, amount in sorted(by_category.items(), key=lambda x: x[1], reverse=True):
         emoji = CATEGORY_EMOJI.get(cat, '•')
-        response += f"{emoji} {cat}: *{amount:.0f} {CURRENCY}*\n"
+        response += f"{emoji} {cat}: {amount:.0f} {CURRENCY}\n"
     
     response += f"\n💳 *ИТОГО: {total:.0f} {CURRENCY}*\n\n"
     
     response += "*По пользователям:*\n"
     for user, amount in sorted(by_user.items(), key=lambda x: x[1], reverse=True):
         percentage = (amount / total) * 100
-        response += f"👤 {user}: *{amount:.0f} {CURRENCY}* ({percentage:.1f}%)\n"
+        response += f"👤 {user}: {amount:.0f} {CURRENCY} ({percentage:.1f}%)\n"
     
     await message.answer(response, parse_mode=ParseMode.MARKDOWN)
 
@@ -523,12 +527,12 @@ async def cmd_week(message: Message):
         by_category[exp[1]] += exp[0]
     
     response = f"📊 *Отчёт за неделю*\n\n"
-    response += f"💰 Всего: *{total:.0f} {CURRENCY}*\n"
-    response += f"📊 В день: *{total/7:.0f} {CURRENCY}*\n\n"
+    response += f"💰 Всего: {total:.0f} {CURRENCY}\n"
+    response += f"📊 В день: {total/7:.0f} {CURRENCY}\n\n"
     
     for cat, amount in sorted(by_category.items(), key=lambda x: x[1], reverse=True)[:5]:
         emoji = CATEGORY_EMOJI.get(cat, '•')
-        response += f"{emoji} {cat}: *{amount:.0f} {CURRENCY}*\n"
+        response += f"{emoji} {cat}: {amount:.0f} {CURRENCY}\n"
     
     await message.answer(response, parse_mode=ParseMode.MARKDOWN)
 
@@ -550,14 +554,14 @@ async def cmd_month(message: Message):
     for cat, amount in sorted(by_category.items(), key=lambda x: x[1], reverse=True):
         percentage = (amount / total) * 100
         emoji = CATEGORY_EMOJI.get(cat, '•')
-        response += f"{emoji} {cat}: *{amount:.0f} {CURRENCY}* ({percentage:.1f}%)\n"
+        response += f"{emoji} {cat}: {amount:.0f} {CURRENCY} ({percentage:.1f}%)\n"
     
     response += f"\n💳 *ВСЕГО: {total:.0f} {CURRENCY}*\n\n"
     
     response += "*По пользователям:*\n"
     for user, amount in sorted(by_user.items(), key=lambda x: x[1], reverse=True):
         percentage = (amount / total) * 100
-        response += f"👤 {user}: *{amount:.0f} {CURRENCY}* ({percentage:.1f}%)\n"
+        response += f"👤 {user}: {amount:.0f} {CURRENCY} ({percentage:.1f}%)\n"
     
     budgets = get_budgets()
     if budgets:
@@ -566,7 +570,9 @@ async def cmd_month(message: Message):
             spent = by_category.get(cat, 0)
             emoji = CATEGORY_EMOJI.get(cat, '•')
             if spent > limit:
-                response += f"{emoji} {cat}: *{spent:.0f}* / {limit:.0f} ⚠️\n"
+                response += f"{emoji} {cat}: {spent:.0f} / {limit:.0f} ⚠️\n"
+            else:
+                response += f"{emoji} {cat}: {spent:.0f} / {limit:.0f}\n"
     
     await message.answer(response, parse_mode=ParseMode.MARKDOWN)
 
@@ -586,7 +592,7 @@ async def cmd_last(message: Message):
         date_str = date_obj.strftime("%d.%m %H:%M")
         emoji = CATEGORY_EMOJI.get(category, '•')
         user_short = username[:15] + "..." if username and len(username) > 15 else username or "Аноним"
-        response += f"{i}. {date_str} {emoji} {category}: *{amount:.0f} {CURRENCY}* ({user_short})\n"
+        response += f"{i}. {date_str} {emoji} {category}: {amount:.0f} {CURRENCY} ({user_short})\n"
     
     await message.answer(response, parse_mode=ParseMode.MARKDOWN)
 
@@ -620,7 +626,7 @@ async def show_budgets_from_callback(callback: CallbackQuery, state: FSMContext)
             remaining = limit - spent
             status = f"✅ Осталось: {remaining:.0f} {CURRENCY}"
         
-        response += f"{emoji} *{category}*:\n"
+        response += f"{emoji} {category}:\n"
         response += f"   Лимит: {limit:.0f} {CURRENCY}\n"
         response += f"   Потрачено: {spent:.0f} {CURRENCY}\n"
         response += f"   {status}\n\n"
@@ -643,14 +649,14 @@ async def process_budget_category(callback: CallbackQuery, state: FSMContext):
     if category in budgets:
         limit, _ = budgets[category]
         await callback.message.edit_text(
-            f"📌 Категория: *{category}*\n"
-            f"Текущий бюджет: *{limit:.0f} {CURRENCY}*\n\n"
+            f"📌 Категория: {category}\n"
+            f"Текущий бюджет: {limit:.0f} {CURRENCY}\n\n"
             f"Введите новую сумму или 0 для удаления:",
             parse_mode=ParseMode.MARKDOWN
         )
     else:
         await callback.message.edit_text(
-            f"📌 Категория: *{category}*\n\n"
+            f"📌 Категория: {category}\n\n"
             f"Введите сумму бюджета на месяц:",
             parse_mode=ParseMode.MARKDOWN
         )
@@ -672,7 +678,7 @@ async def process_budget_amount(message: Message, state: FSMContext):
     if amount <= 0:
         delete_budget(category)
         await message.answer(
-            f"✅ Бюджет для категории *{category}* удалён",
+            f"✅ Бюджет для категории {category} удалён",
             parse_mode=ParseMode.MARKDOWN
         )
     else:
@@ -680,7 +686,7 @@ async def process_budget_amount(message: Message, state: FSMContext):
         emoji = CATEGORY_EMOJI.get(category, '•')
         await message.answer(
             f"✅ Бюджет установлен:\n"
-            f"{emoji} *{category}*: *{amount:.0f} {CURRENCY}* на текущий месяц",
+            f"{emoji} {category}: {amount:.0f} {CURRENCY} на текущий месяц",
             parse_mode=ParseMode.MARKDOWN
         )
     
@@ -705,7 +711,7 @@ async def handle_amount(message: Message, state: FSMContext):
     await state.update_data(amount=amount)
     
     await message.answer(
-        f"💰 Сумма: *{amount:.0f} {CURRENCY}*\n\n"
+        f"💰 Сумма: {amount:.0f} {CURRENCY}\n\n"
         f"📌 Выберите категорию:",
         reply_markup=get_categories_keyboard(),
         parse_mode=ParseMode.MARKDOWN
@@ -741,8 +747,8 @@ async def process_category(callback: CallbackQuery, state: FSMContext):
     await callback.message.edit_text(
         text=(
             f"📝 *Проверьте данные:*\n\n"
-            f"💰 Сумма: *{amount:.0f} {CURRENCY}*\n"
-            f"{emoji} Категория: *{category}*\n\n"
+            f"💰 Сумма: {amount:.0f} {CURRENCY}\n"
+            f"{emoji} Категория: {category}\n\n"
             f"Всё верно?"
         ),
         reply_markup=get_confirmation_keyboard(),
@@ -786,7 +792,7 @@ async def process_confirm(callback: CallbackQuery, state: FSMContext):
             await callback.message.edit_text(
                 text=(
                     f"✅ *Расход сохранён!*\n\n"
-                    f"{emoji} {category}: *{amount:.0f} {CURRENCY}*\n"
+                    f"{emoji} {category}: {amount:.0f} {CURRENCY}\n"
                     f"👤 {username}\n\n"
                     f"⚠️ *Внимание!* Превышен бюджет!\n"
                     f"Лимит: {limit:.0f} {CURRENCY}\n"
@@ -801,7 +807,7 @@ async def process_confirm(callback: CallbackQuery, state: FSMContext):
     await callback.message.edit_text(
         text=(
             f"✅ *Расход сохранён!*\n\n"
-            f"{emoji} {category}: *{amount:.0f} {CURRENCY}*\n"
+            f"{emoji} {category}: {amount:.0f} {CURRENCY}\n"
             f"👤 {username}"
         ),
         parse_mode=ParseMode.MARKDOWN
@@ -868,8 +874,8 @@ async def process_new_amount(message: Message, state: FSMContext):
         await message.answer(
             text=(
                 f"📝 *Проверьте данные:*\n\n"
-                f"💰 Сумма: *{amount:.0f} {CURRENCY}*\n"
-                f"{emoji} Категория: *{category}*\n\n"
+                f"💰 Сумма: {amount:.0f} {CURRENCY}\n"
+                f"{emoji} Категория: {category}\n\n"
                 f"Всё верно?"
             ),
             reply_markup=get_confirmation_keyboard(),
@@ -878,7 +884,7 @@ async def process_new_amount(message: Message, state: FSMContext):
         await state.set_state(ExpenseStates.waiting_for_category)
     else:
         await message.answer(
-            f"💰 Сумма: *{amount:.0f} {CURRENCY}*\n\n"
+            f"💰 Сумма: {amount:.0f} {CURRENCY}\n\n"
             f"📌 Выберите категорию:",
             reply_markup=get_categories_keyboard(),
             parse_mode=ParseMode.MARKDOWN
