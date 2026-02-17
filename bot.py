@@ -22,11 +22,11 @@ from aiogram.enums import ParseMode
 # ===================== НАСТРОЙКИ =====================
 
 logging.basicConfig(level=logging.INFO)
-BOT_TOKEN = "7596651762:AAFj0LLiFzTd7u9TZ9CyAI0bfE2Pl22FjW0"
+BOT_TOKEN = "8591130371:AAE68AUESluEA34WjR7Ykm5Yy-WBn34Ryz0"
 CURRENCY = "₸"
 
 # Строка подключения к PostgreSQL из переменных окружения Render
-DATABASE_URL = os.environ.get('DATABASE_URL', 'postgresql://user:password@localhost:5432/family_budget')
+DATABASE_URL = os.environ.get('DATABASE_URL', 'postgresql://family_budget_clbu_user:DsXfSOpi4cjSIUKs4ztb3VNSbaWkLFCy@dpg-d6a5t406fj8s73cu7n60-a/family_budget_clbu')
 
 bot = Bot(token=BOT_TOKEN)
 storage = MemoryStorage()
