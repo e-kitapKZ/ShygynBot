@@ -1,6 +1,6 @@
 """
 Telegram бот для учёта семейных расходов
-Версия с PostgreSQL для Render
+Версия для бесплатного Web Service на Render + PostgreSQL
 """
 
 import logging
@@ -15,9 +15,11 @@ from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
-from aiogram.types import Message, CallbackQuery
+from aiogram.types import Message, CallbackQuery, Update
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from aiogram.enums import ParseMode
+from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
+from aiohttp import web
 
 # ===================== НАСТРОЙКИ =====================
 
@@ -25,8 +27,18 @@ logging.basicConfig(level=logging.INFO)
 BOT_TOKEN = "8591130371:AAE68AUESluEA34WjR7Ykm5Yy-WBn34Ryz0"
 CURRENCY = "₸"
 
-# Строка подключения к PostgreSQL из переменных окружения Render
+# Данные от Render (они автоматически подставятся)
 DATABASE_URL = os.environ.get('DATABASE_URL', 'postgresql://family_budget_clbu_user:DsXfSOpi4cjSIUKs4ztb3VNSbaWkLFCy@dpg-d6a5t406fj8s73cu7n60-a/family_budget_clbu')
+RENDER_EXTERNAL_URL = os.environ.get('RENDER_EXTERNAL_URL', '')
+PORT = int(os.getenv('PORT', 8000))
+
+# Проверка наличия обязательных переменных
+if not BOT_TOKEN:
+    raise ValueError("Нет BOT_TOKEN!")
+if not DATABASE_URL:
+    raise ValueError("Нет DATABASE_URL! Добавьте переменную окружения")
+if not RENDER_EXTERNAL_URL:
+    raise ValueError("Нет RENDER_EXTERNAL_URL! Добавьте переменную окружения")
 
 bot = Bot(token=BOT_TOKEN)
 storage = MemoryStorage()
@@ -538,7 +550,7 @@ async def cmd_last(message: Message):
     response = "📝 *Последние 10 записей:*\n\n"
     for i, exp in enumerate(expenses, 1):
         amount, category, username, date = exp
-        date_obj = datetime.strptime(str(date), "%Y-%m-%d %H:%M:%S.%f")
+        date_obj = datetime.strptime(str(date).split('.')[0], "%Y-%m-%d %H:%M:%S")
         date_str = date_obj.strftime("%d.%m %H:%M")
         emoji = CATEGORY_EMOJI.get(category, '•')
         user_short = username[:15] + "..." if username and len(username) > 15 else username or "Аноним"
@@ -794,31 +806,66 @@ async def process_new_amount(message: Message, state: FSMContext):
         )
         await state.set_state(ExpenseStates.waiting_for_category)
 
-# ===================== ЗАПУСК =====================
+# ===================== ВЕБХУК И ЗАПУСК =====================
+
+async def handle_webhook(request):
+    """Обработчик вебхуков от Telegram"""
+    try:
+        update = Update.model_validate(await request.json(), context={"bot": bot})
+        await dp.feed_update(bot, update)
+        return web.Response(text="OK", status=200)
+    except Exception as e:
+        logging.error(f"Ошибка обработки вебхука: {e}")
+        return web.Response(text="Error", status=500)
+
+async def health_check(request):
+    """Эндпоинт для проверки здоровья"""
+    return web.Response(text="OK", status=200)
 
 async def on_startup():
     """Действия при запуске"""
     await init_db_pool()
+    
+    # Устанавливаем вебхук
+    webhook_url = f"{RENDER_EXTERNAL_URL}/webhook"
+    await bot.set_webhook(webhook_url, allowed_updates=dp.resolve_used_update_types())
+    print(f"✅ Вебхук установлен на {webhook_url}")
+    
+    # Запускаем проверку бюджетов
     asyncio.create_task(check_budgets())
     print("🤖 Бот запущен и готов к работе!")
 
 async def on_shutdown():
     """Действия при остановке"""
+    await bot.delete_webhook()
     await close_db_pool()
     print("👋 Бот остановлен")
 
 async def main():
-    # Запускаем с обработкой ошибок и автоматическим перезапуском
-    while True:
-        try:
-            await on_startup()
-            await dp.start_polling(bot)
-        except Exception as e:
-            logging.error(f"❌ Бот упал с ошибкой: {e}")
-            print("🔄 Перезапуск через 5 секунд...")
-            await asyncio.sleep(5)
-        finally:
-            await on_shutdown()
+    # Настраиваем приложение aiohttp
+    app = web.Application()
+    
+    # Маршруты
+    app.router.add_post("/webhook", handle_webhook)
+    app.router.add_get("/healthcheck", health_check)
+    app.router.add_get("/", health_check)
+    
+    # Запускаем
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "0.0.0.0", PORT)
+    
+    await on_startup()
+    
+    print(f"🚀 Сервер запущен на порту {PORT}")
+    await site.start()
+    
+    # Держим приложение запущенным
+    try:
+        await asyncio.Event().wait()
+    except KeyboardInterrupt:
+        await on_shutdown()
+        await runner.cleanup()
 
 if __name__ == '__main__':
     try:
