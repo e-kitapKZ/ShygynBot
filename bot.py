@@ -1,14 +1,14 @@
 """
 Telegram бот для учёта семейных расходов
-Финальная версия со всеми категориями и бюджетами
+Версия с PostgreSQL для Render
 """
 
 import logging
-import sqlite3
 import asyncio
+import asyncpg
 from datetime import datetime, timedelta
-from typing import Optional
 from collections import defaultdict
+import os
 
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import Command
@@ -22,82 +22,35 @@ from aiogram.enums import ParseMode
 # ===================== НАСТРОЙКИ =====================
 
 logging.basicConfig(level=logging.INFO)
-BOT_TOKEN = "8591130371:AAE68AUESluEA34WjR7Ykm5Yy-WBn34Ryz0"
-CURRENCY = "₸"  # или "₽" для рублей
+BOT_TOKEN = "7596651762:AAFj0LLiFzTd7u9TZ9CyAI0bfE2Pl22FjW0"
+CURRENCY = "₸"
+
+# Строка подключения к PostgreSQL из переменных окружения Render
+DATABASE_URL = os.environ.get('DATABASE_URL', 'postgresql://user:password@localhost:5432/family_budget')
 
 bot = Bot(token=BOT_TOKEN)
 storage = MemoryStorage()
 dp = Dispatcher(storage=storage)
 
+# Глобальная переменная для пула соединений с БД
+db_pool = None
+
 # ===================== КАТЕГОРИИ =====================
 
 CATEGORIES = [
-    # Основные расходы
-    'продукты',
-    'кафе',
-    'транспорт',
-    'здоровье',
-    'одежда',
-    
-    # Жильё и коммуналка
-    'дом',
-    'комуслуга',
-    'ипотека',
-    
-    # Финансы
-    'кредит',
-    'подписка',
-    'связь',
-    
-    # Транспортные расходы
-    'парковка',
-    'платная_дорога',
-    
-    # Техника и покупки
-    'техника',
-    'подарки',
-    'образование',
-    
-    # Благотворительность
-    'милостыня',
-    
-    # Остальное
-    'развлечения',
-    'прочее'
+    'продукты', 'кафе', 'транспорт', 'здоровье', 'одежда',
+    'дом', 'комуслуга', 'ипотека', 'кредит', 'подписка',
+    'связь', 'парковка', 'платная_дорога', 'техника',
+    'подарки', 'образование', 'милостыня', 'развлечения', 'прочее'
 ]
 
 CATEGORY_EMOJI = {
-    # Основные
-    'продукты': '🛒',
-    'кафе': '🍽',
-    'транспорт': '🚗',
-    'здоровье': '💊',
-    'одежда': '👕',
-    
-    # Жильё
-    'дом': '🏠',
-    'комуслуга': '💡',
-    'ипотека': '🏘️',
-    
-    # Финансы
-    'кредит': '💳',
-    'подписка': '📱',
-    'связь': '📞',
-    
-    # Транспорт
-    'парковка': '🅿️',
-    'платная_дорога': '🛣️',
-    
-    # Техника и покупки
-    'техника': '💻',
-    'подарки': '🎁',
-    'образование': '📚',
-    
-    # Благотворительность
-    'милостыня': '🤲',
-    
-    # Остальное
-    'развлечения': '🎮',
+    'продукты': '🛒', 'кафе': '🍽', 'транспорт': '🚗',
+    'здоровье': '💊', 'одежда': '👕', 'дом': '🏠',
+    'комуслуга': '💡', 'ипотека': '🏘️', 'кредит': '💳',
+    'подписка': '📱', 'связь': '📞', 'парковка': '🅿️',
+    'платная_дорога': '🛣️', 'техника': '💻', 'подарки': '🎁',
+    'образование': '📚', 'милостыня': '🤲', 'развлечения': '🎮',
     'прочее': '📦'
 }
 
@@ -110,218 +63,223 @@ class ExpenseStates(StatesGroup):
     waiting_for_budget_category = State()
     waiting_for_budget_amount = State()
 
-# ===================== БАЗА ДАННЫХ =====================
+# ===================== ПОДКЛЮЧЕНИЕ К БД =====================
 
-def init_db():
-    """Инициализация всех таблиц"""
-    conn = sqlite3.connect('family_budget.db')
-    cursor = conn.cursor()
-    
-    # Расходы
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS expenses (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER NOT NULL,
-            username TEXT,
-            amount REAL NOT NULL,
-            category TEXT NOT NULL,
-            date TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    ''')
-    
-    # Временные расходы
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS pending_expenses (
-            user_id INTEGER PRIMARY KEY,
-            amount REAL NOT NULL,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    ''')
-    
-    # Бюджеты по категориям
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS budgets (
-            category TEXT NOT NULL,
-            month INTEGER NOT NULL,
-            year INTEGER NOT NULL,
-            limit_amount REAL NOT NULL,
-            notified BOOLEAN DEFAULT 0,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            PRIMARY KEY (category, month, year)
-        )
-    ''')
-    
-    conn.commit()
-    conn.close()
-    print("✅ База данных готова")
+async def init_db_pool():
+    """Создание пула соединений с PostgreSQL"""
+    global db_pool
+    try:
+        db_pool = await asyncpg.create_pool(DATABASE_URL)
+        print("✅ Подключение к PostgreSQL установлено")
+        
+        # Создаём таблицы, если их нет
+        async with db_pool.acquire() as conn:
+            # Таблица расходов
+            await conn.execute('''
+                CREATE TABLE IF NOT EXISTS expenses (
+                    id SERIAL PRIMARY KEY,
+                    user_id BIGINT NOT NULL,
+                    username TEXT,
+                    amount DECIMAL(10,2) NOT NULL,
+                    category TEXT NOT NULL,
+                    date TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+            
+            # Таблица временных расходов
+            await conn.execute('''
+                CREATE TABLE IF NOT EXISTS pending_expenses (
+                    user_id BIGINT PRIMARY KEY,
+                    amount DECIMAL(10,2) NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+            
+            # Таблица бюджетов
+            await conn.execute('''
+                CREATE TABLE IF NOT EXISTS budgets (
+                    category TEXT NOT NULL,
+                    month INTEGER NOT NULL,
+                    year INTEGER NOT NULL,
+                    limit_amount DECIMAL(10,2) NOT NULL,
+                    notified BOOLEAN DEFAULT FALSE,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (category, month, year)
+                )
+            ''')
+            
+            print("✅ Таблицы созданы/проверены")
+    except Exception as e:
+        print(f"❌ Ошибка подключения к PostgreSQL: {e}")
+        raise
+
+async def close_db_pool():
+    """Закрытие пула соединений"""
+    if db_pool:
+        await db_pool.close()
+        print("✅ Соединения с БД закрыты")
 
 # ===================== РАБОТА С РАСХОДАМИ =====================
 
-def add_expense(user_id: int, username: str, amount: float, category: str):
+async def add_expense(user_id: int, username: str, amount: float, category: str):
     """Добавить расход"""
-    conn = sqlite3.connect('family_budget.db')
-    cursor = conn.cursor()
-    cursor.execute('''
-        INSERT INTO expenses (user_id, username, amount, category)
-        VALUES (?, ?, ?, ?)
-    ''', (user_id, username, amount, category))
-    conn.commit()
-    conn.close()
+    async with db_pool.acquire() as conn:
+        await conn.execute('''
+            INSERT INTO expenses (user_id, username, amount, category)
+            VALUES ($1, $2, $3, $4)
+        ''', user_id, username, amount, category)
 
-def get_today_expenses():
+async def get_today_expenses():
     """Расходы за сегодня"""
-    conn = sqlite3.connect('family_budget.db')
-    cursor = conn.cursor()
-    today = datetime.now().date()
-    cursor.execute('''
-        SELECT amount, category, username, date 
-        FROM expenses 
-        WHERE DATE(date) = ?
-        ORDER BY date DESC
-    ''', (today,))
-    expenses = cursor.fetchall()
-    conn.close()
-    return expenses
+    async with db_pool.acquire() as conn:
+        today = datetime.now().date()
+        rows = await conn.fetch('''
+            SELECT amount, category, username, date 
+            FROM expenses 
+            WHERE DATE(date) = $1
+            ORDER BY date DESC
+        ''', today)
+        return [(r['amount'], r['category'], r['username'], r['date']) for r in rows]
 
-def get_week_expenses():
+async def get_week_expenses():
     """Расходы за неделю"""
     week_ago = datetime.now() - timedelta(days=7)
-    conn = sqlite3.connect('family_budget.db')
-    cursor = conn.cursor()
-    cursor.execute('''
-        SELECT amount, category, username 
-        FROM expenses 
-        WHERE date >= ?
-    ''', (week_ago,))
-    expenses = cursor.fetchall()
-    conn.close()
-    return expenses
+    async with db_pool.acquire() as conn:
+        rows = await conn.fetch('''
+            SELECT amount, category, username 
+            FROM expenses 
+            WHERE date >= $1
+        ''', week_ago)
+        return [(r['amount'], r['category'], r['username']) for r in rows]
 
-def get_month_expenses(year: int, month: int):
+async def get_month_expenses(year: int, month: int):
     """Расходы за месяц"""
-    conn = sqlite3.connect('family_budget.db')
-    cursor = conn.cursor()
-    cursor.execute('''
-        SELECT amount, category, username, date 
-        FROM expenses 
-        WHERE strftime('%Y', date) = ? AND strftime('%m', date) = ?
-        ORDER BY date DESC
-    ''', (str(year), f"{month:02d}"))
-    expenses = cursor.fetchall()
-    conn.close()
-    
-    total = sum(exp[0] for exp in expenses)
-    by_category = defaultdict(float)
-    by_user = defaultdict(float)
-    
-    for exp in expenses:
-        by_category[exp[1]] += exp[0]
-        by_user[exp[2] or "Аноним"] += exp[0]
-    
-    return total, dict(by_category), dict(by_user), expenses
+    async with db_pool.acquire() as conn:
+        rows = await conn.fetch('''
+            SELECT amount, category, username, date 
+            FROM expenses 
+            WHERE EXTRACT(YEAR FROM date) = $1 AND EXTRACT(MONTH FROM date) = $2
+            ORDER BY date DESC
+        ''', year, month)
+        
+        expenses = [(r['amount'], r['category'], r['username'], r['date']) for r in rows]
+        
+        total = sum(exp[0] for exp in expenses)
+        by_category = defaultdict(float)
+        by_user = defaultdict(float)
+        
+        for exp in expenses:
+            by_category[exp[1]] += exp[0]
+            by_user[exp[2] or "Аноним"] += exp[0]
+        
+        return total, dict(by_category), dict(by_user), expenses
 
-def get_last_expenses(limit: int = 10):
+async def get_last_expenses(limit: int = 10):
     """Последние записи"""
-    conn = sqlite3.connect('family_budget.db')
-    cursor = conn.cursor()
-    cursor.execute('''
-        SELECT amount, category, username, date 
-        FROM expenses 
-        ORDER BY date DESC 
-        LIMIT ?
-    ''', (limit,))
-    expenses = cursor.fetchall()
-    conn.close()
-    return expenses
+    async with db_pool.acquire() as conn:
+        rows = await conn.fetch('''
+            SELECT amount, category, username, date 
+            FROM expenses 
+            ORDER BY date DESC 
+            LIMIT $1
+        ''', limit)
+        return [(r['amount'], r['category'], r['username'], r['date']) for r in rows]
+
+async def save_pending_expense(user_id: int, amount: float):
+    """Сохранить временную сумму"""
+    async with db_pool.acquire() as conn:
+        await conn.execute('''
+            INSERT INTO pending_expenses (user_id, amount, created_at)
+            VALUES ($1, $2, CURRENT_TIMESTAMP)
+            ON CONFLICT (user_id) DO UPDATE SET amount = $2, created_at = CURRENT_TIMESTAMP
+        ''', user_id, amount)
+
+async def get_pending_expense(user_id: int):
+    """Получить временную сумму"""
+    async with db_pool.acquire() as conn:
+        row = await conn.fetchrow('''
+            SELECT amount FROM pending_expenses 
+            WHERE user_id = $1 AND created_at > NOW() - INTERVAL '1 hour'
+        ''', user_id)
+        return row['amount'] if row else None
+
+async def clear_pending_expense(user_id: int):
+    """Очистить временную сумму"""
+    async with db_pool.acquire() as conn:
+        await conn.execute('DELETE FROM pending_expenses WHERE user_id = $1', user_id)
 
 # ===================== РАБОТА С БЮДЖЕТАМИ =====================
 
-def set_budget(category: str, amount: float):
-    """Установить бюджет на текущий месяц"""
+async def set_budget(category: str, amount: float):
+    """Установить бюджет"""
     now = datetime.now()
-    conn = sqlite3.connect('family_budget.db')
-    cursor = conn.cursor()
-    
-    cursor.execute('''
-        INSERT OR REPLACE INTO budgets (category, month, year, limit_amount, notified)
-        VALUES (?, ?, ?, ?, 0)
-    ''', (category, now.month, now.year, amount))
-    
-    conn.commit()
-    conn.close()
+    async with db_pool.acquire() as conn:
+        await conn.execute('''
+            INSERT INTO budgets (category, month, year, limit_amount, notified)
+            VALUES ($1, $2, $3, $4, FALSE)
+            ON CONFLICT (category, month, year) 
+            DO UPDATE SET limit_amount = $4, notified = FALSE
+        ''', category, now.month, now.year, amount)
 
-def get_budgets():
-    """Получить все бюджеты на текущий месяц"""
+async def get_budgets():
+    """Получить все бюджеты"""
     now = datetime.now()
-    conn = sqlite3.connect('family_budget.db')
-    cursor = conn.cursor()
-    
-    cursor.execute('''
-        SELECT category, limit_amount, notified 
-        FROM budgets 
-        WHERE month = ? AND year = ?
-    ''', (now.month, now.year))
-    
-    budgets = cursor.fetchall()
-    conn.close()
-    return {cat: (limit, notified) for cat, limit, notified in budgets}
+    async with db_pool.acquire() as conn:
+        rows = await conn.fetch('''
+            SELECT category, limit_amount, notified 
+            FROM budgets 
+            WHERE month = $1 AND year = $2
+        ''', now.month, now.year)
+        return {r['category']: (r['limit_amount'], r['notified']) for r in rows}
 
-def update_notification_status(category: str):
-    """Отметить что уведомление отправлено"""
+async def update_notification_status(category: str):
+    """Отметить уведомление отправленным"""
     now = datetime.now()
-    conn = sqlite3.connect('family_budget.db')
-    cursor = conn.cursor()
-    
-    cursor.execute('''
-        UPDATE budgets 
-        SET notified = 1 
-        WHERE category = ? AND month = ? AND year = ?
-    ''', (category, now.month, now.year))
-    
-    conn.commit()
-    conn.close()
+    async with db_pool.acquire() as conn:
+        await conn.execute('''
+            UPDATE budgets 
+            SET notified = TRUE 
+            WHERE category = $1 AND month = $2 AND year = $3
+        ''', category, now.month, now.year)
 
-def delete_budget(category: str):
-    """Удалить бюджет для категории"""
+async def delete_budget(category: str):
+    """Удалить бюджет"""
     now = datetime.now()
-    conn = sqlite3.connect('family_budget.db')
-    cursor = conn.cursor()
-    
-    cursor.execute('''
-        DELETE FROM budgets 
-        WHERE category = ? AND month = ? AND year = ?
-    ''', (category, now.month, now.year))
-    
-    conn.commit()
-    conn.close()
+    async with db_pool.acquire() as conn:
+        await conn.execute('''
+            DELETE FROM budgets 
+            WHERE category = $1 AND month = $2 AND year = $3
+        ''', category, now.month, now.year)
+
+async def get_all_users():
+    """Получить всех пользователей для уведомлений"""
+    async with db_pool.acquire() as conn:
+        rows = await conn.fetch('SELECT DISTINCT user_id FROM expenses')
+        return [r['user_id'] for r in rows]
 
 # ===================== ПРОВЕРКА БЮДЖЕТОВ =====================
 
 async def check_budgets():
-    """Проверка превышения бюджетов и отправка уведомлений"""
+    """Проверка превышения бюджетов"""
     while True:
         try:
             now = datetime.now()
-            budgets = get_budgets()
+            budgets = await get_budgets()
             
             if budgets:
-                _, by_category, _, _ = get_month_expenses(now.year, now.month)
+                _, by_category, _, _ = await get_month_expenses(now.year, now.month)
                 
                 for category, (limit, notified) in budgets.items():
                     spent = by_category.get(category, 0)
                     
                     if spent > limit and not notified:
-                        conn = sqlite3.connect('family_budget.db')
-                        cursor = conn.cursor()
-                        cursor.execute('SELECT DISTINCT user_id FROM expenses')
-                        users = cursor.fetchall()
-                        conn.close()
+                        users = await get_all_users()
                         
                         emoji = CATEGORY_EMOJI.get(category, '•')
                         over_amount = spent - limit
                         over_percent = (over_amount / limit) * 100
                         
-                        for (user_id,) in users:
+                        for user_id in users:
                             try:
                                 await bot.send_message(
                                     user_id,
@@ -336,7 +294,7 @@ async def check_budgets():
                             except Exception as e:
                                 logging.error(f"Ошибка отправки уведомления: {e}")
                         
-                        update_notification_status(category)
+                        await update_notification_status(category)
                         
         except Exception as e:
             logging.error(f"Ошибка проверки бюджетов: {e}")
@@ -346,7 +304,6 @@ async def check_budgets():
 # ===================== КЛАВИАТУРЫ =====================
 
 def get_categories_keyboard():
-    """Клавиатура с категориями"""
     builder = InlineKeyboardBuilder()
     for cat in CATEGORIES:
         emoji = CATEGORY_EMOJI.get(cat, '•')
@@ -356,10 +313,9 @@ def get_categories_keyboard():
     builder.adjust(2, 1)
     return builder.as_markup()
 
-def get_budget_categories_keyboard():
-    """Клавиатура для выбора категории бюджета"""
+async def get_budget_categories_keyboard():
     builder = InlineKeyboardBuilder()
-    budgets = get_budgets()
+    budgets = await get_budgets()
     
     for cat in CATEGORIES:
         emoji = CATEGORY_EMOJI.get(cat, '•')
@@ -376,7 +332,6 @@ def get_budget_categories_keyboard():
     return builder.as_markup()
 
 def get_confirmation_keyboard():
-    """Клавиатура подтверждения"""
     builder = InlineKeyboardBuilder()
     builder.button(text="✅ Подтвердить", callback_data="confirm")
     builder.button(text="✏️ Изменить сумму", callback_data="edit_amount")
@@ -441,24 +396,23 @@ async def cmd_categories(message: Message):
 
 @dp.message(Command("budget"))
 async def cmd_budget(message: Message, state: FSMContext):
-    """Установка бюджета"""
+    keyboard = await get_budget_categories_keyboard()
     await message.answer(
         "📌 Выберите категорию для установки бюджета:",
-        reply_markup=get_budget_categories_keyboard()
+        reply_markup=keyboard
     )
     await state.set_state(ExpenseStates.waiting_for_budget_category)
 
 @dp.message(Command("budgets"))
 async def cmd_show_budgets(message: Message):
-    """Показать все бюджеты"""
-    budgets = get_budgets()
+    budgets = await get_budgets()
     
     if not budgets:
         await message.answer("📊 Бюджеты не установлены")
         return
     
     now = datetime.now()
-    _, by_category, _, _ = get_month_expenses(now.year, now.month)
+    _, by_category, _, _ = await get_month_expenses(now.year, now.month)
     
     response = f"💰 *Бюджеты на {now.strftime('%B %Y')}:*\n\n"
     
@@ -481,8 +435,7 @@ async def cmd_show_budgets(message: Message):
 
 @dp.message(Command("today"))
 async def cmd_today(message: Message):
-    """Расходы за сегодня"""
-    expenses = get_today_expenses()
+    expenses = await get_today_expenses()
     
     if not expenses:
         await message.answer("✅ За сегодня расходов пока нет")
@@ -513,8 +466,7 @@ async def cmd_today(message: Message):
 
 @dp.message(Command("week"))
 async def cmd_week(message: Message):
-    """Отчёт за неделю"""
-    expenses = get_week_expenses()
+    expenses = await get_week_expenses()
     
     if not expenses:
         await message.answer("📊 За последнюю неделю расходов нет")
@@ -538,9 +490,8 @@ async def cmd_week(message: Message):
 
 @dp.message(Command("month"))
 async def cmd_month(message: Message):
-    """Отчёт за месяц"""
     now = datetime.now()
-    total, by_category, by_user, _ = get_month_expenses(now.year, now.month)
+    total, by_category, by_user, _ = await get_month_expenses(now.year, now.month)
     
     month_names = ['январь', 'февраль', 'март', 'апрель', 'май', 'июнь',
                   'июль', 'август', 'сентябрь', 'октябрь', 'ноябрь', 'декабрь']
@@ -563,7 +514,7 @@ async def cmd_month(message: Message):
         percentage = (amount / total) * 100
         response += f"👤 {user}: {amount:.0f} {CURRENCY} ({percentage:.1f}%)\n"
     
-    budgets = get_budgets()
+    budgets = await get_budgets()
     if budgets:
         response += f"\n💰 *Бюджеты:*\n"
         for cat, (limit, _) in budgets.items():
@@ -578,8 +529,7 @@ async def cmd_month(message: Message):
 
 @dp.message(Command("last"))
 async def cmd_last(message: Message):
-    """Последние записи"""
-    expenses = get_last_expenses(10)
+    expenses = await get_last_expenses(10)
     
     if not expenses:
         await message.answer("📝 Пока нет записей")
@@ -588,7 +538,7 @@ async def cmd_last(message: Message):
     response = "📝 *Последние 10 записей:*\n\n"
     for i, exp in enumerate(expenses, 1):
         amount, category, username, date = exp
-        date_obj = datetime.strptime(date, "%Y-%m-%d %H:%M:%S")
+        date_obj = datetime.strptime(str(date), "%Y-%m-%d %H:%M:%S.%f")
         date_str = date_obj.strftime("%d.%m %H:%M")
         emoji = CATEGORY_EMOJI.get(category, '•')
         user_short = username[:15] + "..." if username and len(username) > 15 else username or "Аноним"
@@ -600,19 +550,19 @@ async def cmd_last(message: Message):
 
 @dp.callback_query(F.data == "show_budgets", ExpenseStates.waiting_for_budget_category)
 async def show_budgets_from_callback(callback: CallbackQuery, state: FSMContext):
-    """Показать бюджеты из callback"""
     await callback.answer()
-    budgets = get_budgets()
+    budgets = await get_budgets()
     
     if not budgets:
+        keyboard = await get_budget_categories_keyboard()
         await callback.message.edit_text(
             "📊 Бюджеты не установлены",
-            reply_markup=get_budget_categories_keyboard()
+            reply_markup=keyboard
         )
         return
     
     now = datetime.now()
-    _, by_category, _, _ = get_month_expenses(now.year, now.month)
+    _, by_category, _, _ = await get_month_expenses(now.year, now.month)
     
     response = f"💰 *Бюджеты на {now.strftime('%B %Y')}:*\n\n"
     
@@ -631,21 +581,20 @@ async def show_budgets_from_callback(callback: CallbackQuery, state: FSMContext)
         response += f"   Потрачено: {spent:.0f} {CURRENCY}\n"
         response += f"   {status}\n\n"
     
+    keyboard = await get_budget_categories_keyboard()
     await callback.message.edit_text(
         response,
         parse_mode=ParseMode.MARKDOWN,
-        reply_markup=get_budget_categories_keyboard()
+        reply_markup=keyboard
     )
 
 @dp.callback_query(F.data.startswith('budget_'), ExpenseStates.waiting_for_budget_category)
 async def process_budget_category(callback: CallbackQuery, state: FSMContext):
-    """Выбор категории для бюджета"""
     await callback.answer()
     category = callback.data.replace('budget_', '')
-    
     await state.update_data(budget_category=category)
     
-    budgets = get_budgets()
+    budgets = await get_budgets()
     if category in budgets:
         limit, _ = budgets[category]
         await callback.message.edit_text(
@@ -665,7 +614,6 @@ async def process_budget_category(callback: CallbackQuery, state: FSMContext):
 
 @dp.message(ExpenseStates.waiting_for_budget_amount)
 async def process_budget_amount(message: Message, state: FSMContext):
-    """Установка суммы бюджета"""
     try:
         amount = float(message.text.strip())
     except ValueError:
@@ -676,13 +624,13 @@ async def process_budget_amount(message: Message, state: FSMContext):
     category = data.get('budget_category')
     
     if amount <= 0:
-        delete_budget(category)
+        await delete_budget(category)
         await message.answer(
             f"✅ Бюджет для категории {category} удалён",
             parse_mode=ParseMode.MARKDOWN
         )
     else:
-        set_budget(category, amount)
+        await set_budget(category, amount)
         emoji = CATEGORY_EMOJI.get(category, '•')
         await message.answer(
             f"✅ Бюджет установлен:\n"
@@ -696,18 +644,8 @@ async def process_budget_amount(message: Message, state: FSMContext):
 
 @dp.message(F.text.regexp(r'^-?\d+$'))
 async def handle_amount(message: Message, state: FSMContext):
-    """Обработка суммы"""
     amount = abs(float(message.text.strip()))
-    
-    conn = sqlite3.connect('family_budget.db')
-    cursor = conn.cursor()
-    cursor.execute('''
-        INSERT OR REPLACE INTO pending_expenses (user_id, amount)
-        VALUES (?, ?)
-    ''', (message.from_user.id, amount))
-    conn.commit()
-    conn.close()
-    
+    await save_pending_expense(message.from_user.id, amount)
     await state.update_data(amount=amount)
     
     await message.answer(
@@ -720,7 +658,6 @@ async def handle_amount(message: Message, state: FSMContext):
 
 @dp.callback_query(F.data.startswith('cat_'), ExpenseStates.waiting_for_category)
 async def process_category(callback: CallbackQuery, state: FSMContext):
-    """Выбор категории"""
     await callback.answer()
     category = callback.data.replace('cat_', '')
     
@@ -728,13 +665,7 @@ async def process_category(callback: CallbackQuery, state: FSMContext):
     amount = data.get('amount')
     
     if not amount:
-        conn = sqlite3.connect('family_budget.db')
-        cursor = conn.cursor()
-        cursor.execute('SELECT amount FROM pending_expenses WHERE user_id = ?', 
-                      (callback.from_user.id,))
-        result = cursor.fetchone()
-        conn.close()
-        amount = result[0] if result else None
+        amount = await get_pending_expense(callback.from_user.id)
     
     if not amount:
         await callback.message.answer("❌ Ошибка, попробуйте снова")
@@ -757,7 +688,6 @@ async def process_category(callback: CallbackQuery, state: FSMContext):
 
 @dp.callback_query(F.data == 'confirm', ExpenseStates.waiting_for_category)
 async def process_confirm(callback: CallbackQuery, state: FSMContext):
-    """Подтверждение расхода"""
     await callback.answer()
     
     data = await state.get_data()
@@ -770,20 +700,13 @@ async def process_confirm(callback: CallbackQuery, state: FSMContext):
         return
     
     username = callback.from_user.username or callback.from_user.full_name
+    await add_expense(callback.from_user.id, username, amount, category)
+    await clear_pending_expense(callback.from_user.id)
     
-    add_expense(callback.from_user.id, username, amount, category)
-    
-    conn = sqlite3.connect('family_budget.db')
-    cursor = conn.cursor()
-    cursor.execute('DELETE FROM pending_expenses WHERE user_id = ?', 
-                  (callback.from_user.id,))
-    conn.commit()
-    conn.close()
-    
-    budgets = get_budgets()
+    budgets = await get_budgets()
     if category in budgets:
         limit, _ = budgets[category]
-        _, by_category, _, _ = get_month_expenses(datetime.now().year, datetime.now().month)
+        _, by_category, _, _ = await get_month_expenses(datetime.now().year, datetime.now().month)
         spent = by_category.get(category, 0)
         
         if spent > limit:
@@ -812,19 +735,16 @@ async def process_confirm(callback: CallbackQuery, state: FSMContext):
         ),
         parse_mode=ParseMode.MARKDOWN
     )
-    
     await state.clear()
 
 @dp.callback_query(F.data == 'edit_amount', ExpenseStates.waiting_for_category)
 async def process_edit_amount(callback: CallbackQuery, state: FSMContext):
-    """Редактирование суммы"""
     await callback.answer()
     await callback.message.edit_text("✏️ Введите новую сумму:")
     await state.set_state(ExpenseStates.edit_amount)
 
 @dp.callback_query(F.data == 'edit_category', ExpenseStates.waiting_for_category)
 async def process_edit_category(callback: CallbackQuery, state: FSMContext):
-    """Изменение категории"""
     await callback.answer()
     await callback.message.edit_text(
         "📌 Выберите новую категорию:",
@@ -833,37 +753,20 @@ async def process_edit_category(callback: CallbackQuery, state: FSMContext):
 
 @dp.callback_query(F.data == 'cancel')
 async def process_cancel(callback: CallbackQuery, state: FSMContext):
-    """Отмена"""
     await callback.answer()
-    
-    conn = sqlite3.connect('family_budget.db')
-    cursor = conn.cursor()
-    cursor.execute('DELETE FROM pending_expenses WHERE user_id = ?', 
-                  (callback.from_user.id,))
-    conn.commit()
-    conn.close()
-    
+    await clear_pending_expense(callback.from_user.id)
     await callback.message.edit_text("❌ Операция отменена")
     await state.clear()
 
 @dp.message(ExpenseStates.edit_amount)
 async def process_new_amount(message: Message, state: FSMContext):
-    """Новая сумма после редактирования"""
     try:
         amount = abs(float(message.text.strip()))
     except ValueError:
         await message.answer("❌ Введите число")
         return
     
-    conn = sqlite3.connect('family_budget.db')
-    cursor = conn.cursor()
-    cursor.execute('''
-        INSERT OR REPLACE INTO pending_expenses (user_id, amount)
-        VALUES (?, ?)
-    ''', (message.from_user.id, amount))
-    conn.commit()
-    conn.close()
-    
+    await save_pending_expense(message.from_user.id, amount)
     await state.update_data(amount=amount)
     
     data = await state.get_data()
@@ -893,16 +796,32 @@ async def process_new_amount(message: Message, state: FSMContext):
 
 # ===================== ЗАПУСК =====================
 
-async def main():
-    init_db()
+async def on_startup():
+    """Действия при запуске"""
+    await init_db_pool()
     asyncio.create_task(check_budgets())
-    
-    print("🤖 Семейный бюджет бот запущен!")
-    print(f"💰 Валюта: {CURRENCY}")
-    print(f"📊 Категорий: {len(CATEGORIES)}")
-    print("📋 Команды: /start, /budget, /budgets, /today, /week, /month, /last, /categories")
-    
-    await dp.start_polling(bot)
+    print("🤖 Бот запущен и готов к работе!")
+
+async def on_shutdown():
+    """Действия при остановке"""
+    await close_db_pool()
+    print("👋 Бот остановлен")
+
+async def main():
+    # Запускаем с обработкой ошибок и автоматическим перезапуском
+    while True:
+        try:
+            await on_startup()
+            await dp.start_polling(bot)
+        except Exception as e:
+            logging.error(f"❌ Бот упал с ошибкой: {e}")
+            print("🔄 Перезапуск через 5 секунд...")
+            await asyncio.sleep(5)
+        finally:
+            await on_shutdown()
 
 if __name__ == '__main__':
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        print("👋 Бот остановлен пользователем")
