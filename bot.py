@@ -1,6 +1,7 @@
 """
 Telegram бот для учёта семейных расходов
 Версия для бесплатного Web Service на Render + PostgreSQL
+Исправлена ошибка с типами данных decimal.Decimal
 """
 
 import logging
@@ -9,6 +10,7 @@ import asyncpg
 from datetime import datetime, timedelta
 from collections import defaultdict
 import os
+from decimal import Decimal
 
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import Command
@@ -29,7 +31,7 @@ CURRENCY = "₸"
 
 # Данные от Render (они автоматически подставятся)
 DATABASE_URL = os.environ.get('DATABASE_URL', 'postgresql://family_budget_clbu_user:DsXfSOpi4cjSIUKs4ztb3VNSbaWkLFCy@dpg-d6a5t406fj8s73cu7n60-a/family_budget_clbu')
-RENDER_EXTERNAL_URL = os.environ.get('RENDER_EXTERNAL_URL', '')
+RENDER_EXTERNAL_URL = os.environ.get('RENDER_EXTERNAL_URL', 'https://shygynbot-1.onrender.com/')
 PORT = int(os.getenv('PORT', 8000))
 
 # Проверка наличия обязательных переменных
@@ -74,6 +76,14 @@ class ExpenseStates(StatesGroup):
     edit_amount = State()
     waiting_for_budget_category = State()
     waiting_for_budget_amount = State()
+
+# ===================== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ =====================
+
+def to_float(value):
+    """Преобразует Decimal в float для совместимости"""
+    if isinstance(value, Decimal):
+        return float(value)
+    return value
 
 # ===================== ПОДКЛЮЧЕНИЕ К БД =====================
 
@@ -151,7 +161,8 @@ async def get_today_expenses():
             WHERE DATE(date) = $1
             ORDER BY date DESC
         ''', today)
-        return [(r['amount'], r['category'], r['username'], r['date']) for r in rows]
+        # Преобразуем Decimal в float
+        return [(to_float(r['amount']), r['category'], r['username'], r['date']) for r in rows]
 
 async def get_week_expenses():
     """Расходы за неделю"""
@@ -162,7 +173,8 @@ async def get_week_expenses():
             FROM expenses 
             WHERE date >= $1
         ''', week_ago)
-        return [(r['amount'], r['category'], r['username']) for r in rows]
+        # Преобразуем Decimal в float
+        return [(to_float(r['amount']), r['category'], r['username']) for r in rows]
 
 async def get_month_expenses(year: int, month: int):
     """Расходы за месяц"""
@@ -174,7 +186,11 @@ async def get_month_expenses(year: int, month: int):
             ORDER BY date DESC
         ''', year, month)
         
-        expenses = [(r['amount'], r['category'], r['username'], r['date']) for r in rows]
+        # Преобразуем все Decimal в float при загрузке
+        expenses = []
+        for r in rows:
+            amount = to_float(r['amount'])
+            expenses.append((amount, r['category'], r['username'], r['date']))
         
         total = sum(exp[0] for exp in expenses)
         by_category = defaultdict(float)
@@ -195,7 +211,8 @@ async def get_last_expenses(limit: int = 10):
             ORDER BY date DESC 
             LIMIT $1
         ''', limit)
-        return [(r['amount'], r['category'], r['username'], r['date']) for r in rows]
+        # Преобразуем Decimal в float
+        return [(to_float(r['amount']), r['category'], r['username'], r['date']) for r in rows]
 
 async def save_pending_expense(user_id: int, amount: float):
     """Сохранить временную сумму"""
@@ -213,7 +230,7 @@ async def get_pending_expense(user_id: int):
             SELECT amount FROM pending_expenses 
             WHERE user_id = $1 AND created_at > NOW() - INTERVAL '1 hour'
         ''', user_id)
-        return row['amount'] if row else None
+        return to_float(row['amount']) if row else None
 
 async def clear_pending_expense(user_id: int):
     """Очистить временную сумму"""
@@ -242,7 +259,8 @@ async def get_budgets():
             FROM budgets 
             WHERE month = $1 AND year = $2
         ''', now.month, now.year)
-        return {r['category']: (r['limit_amount'], r['notified']) for r in rows}
+        # Преобразуем Decimal в float
+        return {r['category']: (to_float(r['limit_amount']), r['notified']) for r in rows}
 
 async def update_notification_status(category: str):
     """Отметить уведомление отправленным"""
@@ -799,76 +817,4 @@ async def process_new_amount(message: Message, state: FSMContext):
         await state.set_state(ExpenseStates.waiting_for_category)
     else:
         await message.answer(
-            f"💰 Сумма: {amount:.0f} {CURRENCY}\n\n"
-            f"📌 Выберите категорию:",
-            reply_markup=get_categories_keyboard(),
-            parse_mode=ParseMode.MARKDOWN
-        )
-        await state.set_state(ExpenseStates.waiting_for_category)
-
-# ===================== ВЕБХУК И ЗАПУСК =====================
-
-async def handle_webhook(request):
-    """Обработчик вебхуков от Telegram"""
-    try:
-        update = Update.model_validate(await request.json(), context={"bot": bot})
-        await dp.feed_update(bot, update)
-        return web.Response(text="OK", status=200)
-    except Exception as e:
-        logging.error(f"Ошибка обработки вебхука: {e}")
-        return web.Response(text="Error", status=500)
-
-async def health_check(request):
-    """Эндпоинт для проверки здоровья"""
-    return web.Response(text="OK", status=200)
-
-async def on_startup():
-    """Действия при запуске"""
-    await init_db_pool()
-    
-    # Устанавливаем вебхук
-    webhook_url = f"{RENDER_EXTERNAL_URL}/webhook"
-    await bot.set_webhook(webhook_url, allowed_updates=dp.resolve_used_update_types())
-    print(f"✅ Вебхук установлен на {webhook_url}")
-    
-    # Запускаем проверку бюджетов
-    asyncio.create_task(check_budgets())
-    print("🤖 Бот запущен и готов к работе!")
-
-async def on_shutdown():
-    """Действия при остановке"""
-    await bot.delete_webhook()
-    await close_db_pool()
-    print("👋 Бот остановлен")
-
-async def main():
-    # Настраиваем приложение aiohttp
-    app = web.Application()
-    
-    # Маршруты
-    app.router.add_post("/webhook", handle_webhook)
-    app.router.add_get("/healthcheck", health_check)
-    app.router.add_get("/", health_check)
-    
-    # Запускаем
-    runner = web.AppRunner(app)
-    await runner.setup()
-    site = web.TCPSite(runner, "0.0.0.0", PORT)
-    
-    await on_startup()
-    
-    print(f"🚀 Сервер запущен на порту {PORT}")
-    await site.start()
-    
-    # Держим приложение запущенным
-    try:
-        await asyncio.Event().wait()
-    except KeyboardInterrupt:
-        await on_shutdown()
-        await runner.cleanup()
-
-if __name__ == '__main__':
-    try:
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        print("👋 Бот остановлен пользователем")
+            f"💰
