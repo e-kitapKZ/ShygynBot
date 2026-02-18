@@ -27,7 +27,7 @@ logging.basicConfig(level=logging.INFO)
 BOT_TOKEN = "8591130371:AAE68AUESluEA34WjR7Ykm5Yy-WBn34Ryz0"
 CURRENCY = "₸"
 
-DATABASE_URL = os.environ.get('DATABASE_URL', 'postgresql://family_budget_clbu_user:DsXfSOpi4cjSIUKs4ztb3VNSbaWkLFCy@dpg-d6a5t406fj8s73cu7n60-a/family_budget_clbu')
+DATABASE_URL = os.environ.get('DATABASE_URL', 'postgresql://shygynbot_db_user:dYplgcbrQv3RbndkycOEEESEtSDtwPyQ@dpg-d6aktjfpm1nc73ddrj70-a/shygynbot_db')
 RENDER_EXTERNAL_URL = os.environ.get('RENDER_EXTERNAL_URL', 'https://shygynbot-1.onrender.com/')
 PORT = int(os.getenv('PORT', 8000))
 
