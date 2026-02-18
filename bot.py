@@ -20,7 +20,6 @@ from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import Message, CallbackQuery, Update
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from aiogram.enums import ParseMode
-from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
 from aiohttp import web
 
 # ===================== НАСТРОЙКИ =====================
@@ -817,4 +816,76 @@ async def process_new_amount(message: Message, state: FSMContext):
         await state.set_state(ExpenseStates.waiting_for_category)
     else:
         await message.answer(
-            f"💰
+            f"💰 Сумма: {amount:.0f} {CURRENCY}\n\n"
+            f"📌 Выберите категорию:",
+            reply_markup=get_categories_keyboard(),
+            parse_mode=ParseMode.MARKDOWN
+        )
+        await state.set_state(ExpenseStates.waiting_for_category)
+
+# ===================== ВЕБХУК И ЗАПУСК =====================
+
+async def handle_webhook(request):
+    """Обработчик вебхуков от Telegram"""
+    try:
+        update = Update.model_validate(await request.json(), context={"bot": bot})
+        await dp.feed_update(bot, update)
+        return web.Response(text="OK", status=200)
+    except Exception as e:
+        logging.error(f"Ошибка обработки вебхука: {e}")
+        return web.Response(text="Error", status=500)
+
+async def health_check(request):
+    """Эндпоинт для проверки здоровья"""
+    return web.Response(text="OK", status=200)
+
+async def on_startup():
+    """Действия при запуске"""
+    await init_db_pool()
+    
+    # Устанавливаем вебхук
+    webhook_url = f"{RENDER_EXTERNAL_URL}/webhook"
+    await bot.set_webhook(webhook_url, allowed_updates=dp.resolve_used_update_types())
+    print(f"✅ Вебхук установлен на {webhook_url}")
+    
+    # Запускаем проверку бюджетов
+    asyncio.create_task(check_budgets())
+    print("🤖 Бот запущен и готов к работе!")
+
+async def on_shutdown():
+    """Действия при остановке"""
+    await bot.delete_webhook()
+    await close_db_pool()
+    print("👋 Бот остановлен")
+
+async def main():
+    # Настраиваем приложение aiohttp
+    app = web.Application()
+    
+    # Маршруты
+    app.router.add_post("/webhook", handle_webhook)
+    app.router.add_get("/healthcheck", health_check)
+    app.router.add_get("/", health_check)
+    
+    # Запускаем
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "0.0.0.0", PORT)
+    
+    await on_startup()
+    
+    print(f"🚀 Сервер запущен на порту {PORT}")
+    await site.start()
+    
+    # Держим приложение запущенным
+    try:
+        await asyncio.Event().wait()
+    except KeyboardInterrupt:
+        await on_shutdown()
+        await runner.cleanup()
+
+if __name__ == '__main__':
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        print("👋 Бот остановлен пользователем")
