@@ -336,7 +336,9 @@ def get_categories_keyboard():
     builder = InlineKeyboardBuilder()
     for cat in CATEGORIES:
         emoji = CATEGORY_EMOJI.get(cat, '•')
-        builder.button(text=f"{emoji} {cat}", callback_data=f"cat_{cat}")
+        # Заменяем нижнее подчеркивание на дефис для callback_data
+        callback_cat = cat.replace('_', '-')
+        builder.button(text=f"{emoji} {cat}", callback_data=f"cat_{callback_cat}")
     builder.adjust(2)
     builder.button(text="❌ Отмена", callback_data="cancel")
     builder.adjust(2, 1)
@@ -348,11 +350,12 @@ async def get_budget_categories_keyboard():
     
     for cat in CATEGORIES:
         emoji = CATEGORY_EMOJI.get(cat, '•')
+        callback_cat = cat.replace('_', '-')
         if cat in budgets:
             limit, _ = budgets[cat]
-            builder.button(text=f"{emoji} {cat} ({limit:.0f}{CURRENCY})", callback_data=f"budget_{cat}")
+            builder.button(text=f"{emoji} {cat} ({limit:.0f}{CURRENCY})", callback_data=f"budget_{callback_cat}")
         else:
-            builder.button(text=f"{emoji} {cat} (не установлен)", callback_data=f"budget_{cat}")
+            builder.button(text=f"{emoji} {cat} (не установлен)", callback_data=f"budget_{callback_cat}")
     
     builder.adjust(1)
     builder.button(text="📋 Показать все бюджеты", callback_data="show_budgets")
@@ -620,7 +623,8 @@ async def show_budgets_from_callback(callback: CallbackQuery, state: FSMContext)
 @dp.callback_query(F.data.startswith('budget_'), ExpenseStates.waiting_for_budget_category)
 async def process_budget_category(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
-    category = callback.data.replace('budget_', '')
+    callback_cat = callback.data.replace('budget_', '')
+    category = callback_cat.replace('-', '_')
     await state.update_data(budget_category=category)
     
     budgets = await get_budgets()
@@ -688,7 +692,9 @@ async def handle_amount(message: Message, state: FSMContext):
 @dp.callback_query(F.data.startswith('cat_'), ExpenseStates.waiting_for_category)
 async def process_category(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
-    category = callback.data.replace('cat_', '')
+    # Получаем категорию из callback_data и заменяем дефис обратно на подчеркивание
+    callback_cat = callback.data.replace('cat_', '')
+    category = callback_cat.replace('-', '_')
     
     data = await state.get_data()
     amount = data.get('amount')
