@@ -1,7 +1,6 @@
 """
 Telegram бот для учёта семейных расходов
-Версия для бесплатного Web Service на Render + PostgreSQL
-Исправлена ошибка с типами данных decimal.Decimal
+Финальная версия - все категории работают!
 """
 
 import logging
@@ -28,33 +27,31 @@ logging.basicConfig(level=logging.INFO)
 BOT_TOKEN = "8591130371:AAE68AUESluEA34WjR7Ykm5Yy-WBn34Ryz0"
 CURRENCY = "₸"
 
-# Данные от Render (они автоматически подставятся)
 DATABASE_URL = os.environ.get('DATABASE_URL', 'postgresql://family_budget_clbu_user:DsXfSOpi4cjSIUKs4ztb3VNSbaWkLFCy@dpg-d6a5t406fj8s73cu7n60-a/family_budget_clbu')
 RENDER_EXTERNAL_URL = os.environ.get('RENDER_EXTERNAL_URL', 'https://shygynbot-1.onrender.com/')
 PORT = int(os.getenv('PORT', 8000))
 
-# Проверка наличия обязательных переменных
 if not BOT_TOKEN:
     raise ValueError("Нет BOT_TOKEN!")
 if not DATABASE_URL:
-    raise ValueError("Нет DATABASE_URL! Добавьте переменную окружения")
+    raise ValueError("Нет DATABASE_URL!")
 if not RENDER_EXTERNAL_URL:
-    raise ValueError("Нет RENDER_EXTERNAL_URL! Добавьте переменную окружения")
+    raise ValueError("Нет RENDER_EXTERNAL_URL!")
 
 bot = Bot(token=BOT_TOKEN)
 storage = MemoryStorage()
 dp = Dispatcher(storage=storage)
 
-# Глобальная переменная для пула соединений с БД
 db_pool = None
 
-# ===================== КАТЕГОРИИ =====================
+# ===================== КАТЕГОРИИ (БЕЗ НИЖНИХ ПОДЧЕРКИВАНИЙ) =====================
 
 CATEGORIES = [
     'продукты', 'кафе', 'транспорт', 'здоровье', 'одежда',
     'дом', 'комуслуга', 'ипотека', 'кредит', 'подписка',
-    'связь', 'парковка', 'платная_дорога', 'техника',
-    'подарки', 'образование', 'милостыня', 'развлечения', 'прочее'
+    'связь', 'парковка', 'дороги',  # вместо "платная_дорога"
+    'техника', 'подарки', 'образование', 'милостыня',
+    'развлечения', 'прочее'
 ]
 
 CATEGORY_EMOJI = {
@@ -62,9 +59,9 @@ CATEGORY_EMOJI = {
     'здоровье': '💊', 'одежда': '👕', 'дом': '🏠',
     'комуслуга': '💡', 'ипотека': '🏘️', 'кредит': '💳',
     'подписка': '📱', 'связь': '📞', 'парковка': '🅿️',
-    'платная_дорога': '🛣️', 'техника': '💻', 'подарки': '🎁',
-    'образование': '📚', 'милостыня': '🤲', 'развлечения': '🎮',
-    'прочее': '📦'
+    'дороги': '🛣️',  # обновлено
+    'техника': '💻', 'подарки': '🎁', 'образование': '📚',
+    'милостыня': '🤲', 'развлечения': '🎮', 'прочее': '📦'
 }
 
 # ===================== СОСТОЯНИЯ =====================
@@ -79,7 +76,6 @@ class ExpenseStates(StatesGroup):
 # ===================== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ =====================
 
 def to_float(value):
-    """Преобразует Decimal в float для совместимости"""
     if isinstance(value, Decimal):
         return float(value)
     return value
@@ -87,15 +83,12 @@ def to_float(value):
 # ===================== ПОДКЛЮЧЕНИЕ К БД =====================
 
 async def init_db_pool():
-    """Создание пула соединений с PostgreSQL"""
     global db_pool
     try:
         db_pool = await asyncpg.create_pool(DATABASE_URL)
         print("✅ Подключение к PostgreSQL установлено")
         
-        # Создаём таблицы, если их нет
         async with db_pool.acquire() as conn:
-            # Таблица расходов
             await conn.execute('''
                 CREATE TABLE IF NOT EXISTS expenses (
                     id SERIAL PRIMARY KEY,
@@ -107,7 +100,6 @@ async def init_db_pool():
                 )
             ''')
             
-            # Таблица временных расходов
             await conn.execute('''
                 CREATE TABLE IF NOT EXISTS pending_expenses (
                     user_id BIGINT PRIMARY KEY,
@@ -116,7 +108,6 @@ async def init_db_pool():
                 )
             ''')
             
-            # Таблица бюджетов
             await conn.execute('''
                 CREATE TABLE IF NOT EXISTS budgets (
                     category TEXT NOT NULL,
@@ -135,7 +126,6 @@ async def init_db_pool():
         raise
 
 async def close_db_pool():
-    """Закрытие пула соединений"""
     if db_pool:
         await db_pool.close()
         print("✅ Соединения с БД закрыты")
@@ -143,7 +133,6 @@ async def close_db_pool():
 # ===================== РАБОТА С РАСХОДАМИ =====================
 
 async def add_expense(user_id: int, username: str, amount: float, category: str):
-    """Добавить расход"""
     async with db_pool.acquire() as conn:
         await conn.execute('''
             INSERT INTO expenses (user_id, username, amount, category)
@@ -151,7 +140,6 @@ async def add_expense(user_id: int, username: str, amount: float, category: str)
         ''', user_id, username, amount, category)
 
 async def get_today_expenses():
-    """Расходы за сегодня"""
     async with db_pool.acquire() as conn:
         today = datetime.now().date()
         rows = await conn.fetch('''
@@ -160,11 +148,9 @@ async def get_today_expenses():
             WHERE DATE(date) = $1
             ORDER BY date DESC
         ''', today)
-        # Преобразуем Decimal в float
         return [(to_float(r['amount']), r['category'], r['username'], r['date']) for r in rows]
 
 async def get_week_expenses():
-    """Расходы за неделю"""
     week_ago = datetime.now() - timedelta(days=7)
     async with db_pool.acquire() as conn:
         rows = await conn.fetch('''
@@ -172,11 +158,9 @@ async def get_week_expenses():
             FROM expenses 
             WHERE date >= $1
         ''', week_ago)
-        # Преобразуем Decimal в float
         return [(to_float(r['amount']), r['category'], r['username']) for r in rows]
 
 async def get_month_expenses(year: int, month: int):
-    """Расходы за месяц"""
     async with db_pool.acquire() as conn:
         rows = await conn.fetch('''
             SELECT amount, category, username, date 
@@ -185,12 +169,7 @@ async def get_month_expenses(year: int, month: int):
             ORDER BY date DESC
         ''', year, month)
         
-        # Преобразуем все Decimal в float при загрузке
-        expenses = []
-        for r in rows:
-            amount = to_float(r['amount'])
-            expenses.append((amount, r['category'], r['username'], r['date']))
-        
+        expenses = [(to_float(r['amount']), r['category'], r['username'], r['date']) for r in rows]
         total = sum(exp[0] for exp in expenses)
         by_category = defaultdict(float)
         by_user = defaultdict(float)
@@ -202,7 +181,6 @@ async def get_month_expenses(year: int, month: int):
         return total, dict(by_category), dict(by_user), expenses
 
 async def get_last_expenses(limit: int = 10):
-    """Последние записи"""
     async with db_pool.acquire() as conn:
         rows = await conn.fetch('''
             SELECT amount, category, username, date 
@@ -210,11 +188,9 @@ async def get_last_expenses(limit: int = 10):
             ORDER BY date DESC 
             LIMIT $1
         ''', limit)
-        # Преобразуем Decimal в float
         return [(to_float(r['amount']), r['category'], r['username'], r['date']) for r in rows]
 
 async def save_pending_expense(user_id: int, amount: float):
-    """Сохранить временную сумму"""
     async with db_pool.acquire() as conn:
         await conn.execute('''
             INSERT INTO pending_expenses (user_id, amount, created_at)
@@ -223,7 +199,6 @@ async def save_pending_expense(user_id: int, amount: float):
         ''', user_id, amount)
 
 async def get_pending_expense(user_id: int):
-    """Получить временную сумму"""
     async with db_pool.acquire() as conn:
         row = await conn.fetchrow('''
             SELECT amount FROM pending_expenses 
@@ -232,14 +207,12 @@ async def get_pending_expense(user_id: int):
         return to_float(row['amount']) if row else None
 
 async def clear_pending_expense(user_id: int):
-    """Очистить временную сумму"""
     async with db_pool.acquire() as conn:
         await conn.execute('DELETE FROM pending_expenses WHERE user_id = $1', user_id)
 
 # ===================== РАБОТА С БЮДЖЕТАМИ =====================
 
 async def set_budget(category: str, amount: float):
-    """Установить бюджет"""
     now = datetime.now()
     async with db_pool.acquire() as conn:
         await conn.execute('''
@@ -250,7 +223,6 @@ async def set_budget(category: str, amount: float):
         ''', category, now.month, now.year, amount)
 
 async def get_budgets():
-    """Получить все бюджеты"""
     now = datetime.now()
     async with db_pool.acquire() as conn:
         rows = await conn.fetch('''
@@ -258,11 +230,9 @@ async def get_budgets():
             FROM budgets 
             WHERE month = $1 AND year = $2
         ''', now.month, now.year)
-        # Преобразуем Decimal в float
         return {r['category']: (to_float(r['limit_amount']), r['notified']) for r in rows}
 
 async def update_notification_status(category: str):
-    """Отметить уведомление отправленным"""
     now = datetime.now()
     async with db_pool.acquire() as conn:
         await conn.execute('''
@@ -272,7 +242,6 @@ async def update_notification_status(category: str):
         ''', category, now.month, now.year)
 
 async def delete_budget(category: str):
-    """Удалить бюджет"""
     now = datetime.now()
     async with db_pool.acquire() as conn:
         await conn.execute('''
@@ -281,7 +250,6 @@ async def delete_budget(category: str):
         ''', category, now.month, now.year)
 
 async def get_all_users():
-    """Получить всех пользователей для уведомлений"""
     async with db_pool.acquire() as conn:
         rows = await conn.fetch('SELECT DISTINCT user_id FROM expenses')
         return [r['user_id'] for r in rows]
@@ -289,7 +257,6 @@ async def get_all_users():
 # ===================== ПРОВЕРКА БЮДЖЕТОВ =====================
 
 async def check_budgets():
-    """Проверка превышения бюджетов"""
     while True:
         try:
             now = datetime.now()
@@ -336,9 +303,8 @@ def get_categories_keyboard():
     builder = InlineKeyboardBuilder()
     for cat in CATEGORIES:
         emoji = CATEGORY_EMOJI.get(cat, '•')
-        # Заменяем нижнее подчеркивание на дефис для callback_data
-        callback_cat = cat.replace('_', '-')
-        builder.button(text=f"{emoji} {cat}", callback_data=f"cat_{callback_cat}")
+        # Используем простое название категории без изменений
+        builder.button(text=f"{emoji} {cat}", callback_data=f"cat_{cat}")
     builder.adjust(2)
     builder.button(text="❌ Отмена", callback_data="cancel")
     builder.adjust(2, 1)
@@ -350,12 +316,11 @@ async def get_budget_categories_keyboard():
     
     for cat in CATEGORIES:
         emoji = CATEGORY_EMOJI.get(cat, '•')
-        callback_cat = cat.replace('_', '-')
         if cat in budgets:
             limit, _ = budgets[cat]
-            builder.button(text=f"{emoji} {cat} ({limit:.0f}{CURRENCY})", callback_data=f"budget_{callback_cat}")
+            builder.button(text=f"{emoji} {cat} ({limit:.0f}{CURRENCY})", callback_data=f"budget_{cat}")
         else:
-            builder.button(text=f"{emoji} {cat} (не установлен)", callback_data=f"budget_{callback_cat}")
+            builder.button(text=f"{emoji} {cat} (не установлен)", callback_data=f"budget_{cat}")
     
     builder.adjust(1)
     builder.button(text="📋 Показать все бюджеты", callback_data="show_budgets")
@@ -410,7 +375,7 @@ async def cmd_help(message: Message):
         "*Категории расходов:*\n"
         "🏠 дом          💡 комуслуга     🏘️ ипотека\n"
         "💳 кредит       📱 подписка      📞 связь\n"
-        "🚗 транспорт    🅿️ парковка      🛣️ платная_дорога\n"
+        "🚗 транспорт    🅿️ парковка      🛣️ дороги\n"
         "🛒 продукты     👕 одежда        💻 техника\n"
         "🍽 кафе         🎁 подарки       📚 образование\n"
         "💊 здоровье     🤲 милостыня     🎮 развлечения\n"
@@ -623,8 +588,7 @@ async def show_budgets_from_callback(callback: CallbackQuery, state: FSMContext)
 @dp.callback_query(F.data.startswith('budget_'), ExpenseStates.waiting_for_budget_category)
 async def process_budget_category(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
-    callback_cat = callback.data.replace('budget_', '')
-    category = callback_cat.replace('-', '_')
+    category = callback.data.replace('budget_', '')
     await state.update_data(budget_category=category)
     
     budgets = await get_budgets()
@@ -692,9 +656,7 @@ async def handle_amount(message: Message, state: FSMContext):
 @dp.callback_query(F.data.startswith('cat_'), ExpenseStates.waiting_for_category)
 async def process_category(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
-    # Получаем категорию из callback_data и заменяем дефис обратно на подчеркивание
-    callback_cat = callback.data.replace('cat_', '')
-    category = callback_cat.replace('-', '_')
+    category = callback.data.replace('cat_', '')
     
     data = await state.get_data()
     amount = data.get('amount')
@@ -832,7 +794,6 @@ async def process_new_amount(message: Message, state: FSMContext):
 # ===================== ВЕБХУК И ЗАПУСК =====================
 
 async def handle_webhook(request):
-    """Обработчик вебхуков от Telegram"""
     try:
         update = Update.model_validate(await request.json(), context={"bot": bot})
         await dp.feed_update(bot, update)
@@ -842,48 +803,35 @@ async def handle_webhook(request):
         return web.Response(text="Error", status=500)
 
 async def health_check(request):
-    """Эндпоинт для проверки здоровья"""
     return web.Response(text="OK", status=200)
 
 async def on_startup():
-    """Действия при запуске"""
     await init_db_pool()
-    
-    # Устанавливаем вебхук
     webhook_url = f"{RENDER_EXTERNAL_URL}/webhook"
     await bot.set_webhook(webhook_url, allowed_updates=dp.resolve_used_update_types())
     print(f"✅ Вебхук установлен на {webhook_url}")
-    
-    # Запускаем проверку бюджетов
     asyncio.create_task(check_budgets())
     print("🤖 Бот запущен и готов к работе!")
 
 async def on_shutdown():
-    """Действия при остановке"""
     await bot.delete_webhook()
     await close_db_pool()
     print("👋 Бот остановлен")
 
 async def main():
-    # Настраиваем приложение aiohttp
     app = web.Application()
-    
-    # Маршруты
     app.router.add_post("/webhook", handle_webhook)
     app.router.add_get("/healthcheck", health_check)
     app.router.add_get("/", health_check)
     
-    # Запускаем
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, "0.0.0.0", PORT)
     
     await on_startup()
-    
     print(f"🚀 Сервер запущен на порту {PORT}")
     await site.start()
     
-    # Держим приложение запущенным
     try:
         await asyncio.Event().wait()
     except KeyboardInterrupt:
