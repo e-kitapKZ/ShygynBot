@@ -1,0 +1,28 @@
+name: Render Keep-Alive Ping
+
+on:
+  schedule:
+    # Запуск каждые 14 минут (чуть меньше 15 минут лимита Render)
+    - cron: '*/14 * * * *'
+  workflow_dispatch:  # Позволяет запускать вручную
+
+jobs:
+  ping-render:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Send HTTP Request to Render
+        run: |
+          # Замените URL на ваш актуальный URL бота
+          RENDER_URL="https://shygynbot-1.onrender.com/healthcheck"
+          
+          echo "🔄 Пингую $RENDER_URL..."
+          echo "⏰ Время: $(date '+%Y-%m-%d %H:%M:%S UTC')"
+          
+          # Отправляем GET запрос и сохраняем результат
+          response=$(curl -s -o /dev/null -w "%{http_code}" --max-time 30 "$RENDER_URL")
+          
+          if [ "$response" = "200" ]; then
+            echo "✅ Успешно! HTTP код: $response"
+          else
+            echo "⚠️ Проблема! HTTP код: $response"
+          fi
